@@ -48,7 +48,7 @@ __status__ = "Prototype"
 __revision__ = "$Format:%H$"
 
 TIME_WAIT = 3
-task_running_list = list()  # uuid list – Unique identifier of the task
+task_running_list = []  # uuid list – Unique identifier of the task
 
 
 class TokenFileHandler(FileSystemEventHandler):
@@ -137,55 +137,56 @@ def read_options_from_preset(p, t):
 
 
 def write_status(dn, task_uuid_or_last_error, task_status="RUNNING"):
-    with open(os.path.join(dn, f"TASK_{task_status}"), "w") as fd:
+    fn = os.path.join(dn, f"TASK_{task_status}")
+    with open(fn, "w") as fd:
         print(task_uuid_or_last_error, file=fd)
+    os.chmod(fn, 0o777)
 
 
-def remove_running_status(dn):
+def remove_token_file(dn, fn="TASK_RUNNING"):
     try:
-        os.remove(os.path.join(dn, "TASK_RUNNING"))
+        os.remove(os.path.join(dn, fn))
     except FileNotFoundError:
         pass
 
 
 def run_task(task, completed):
-    i = task.info()
-    task_running_list.append(i.uuid)
     try:
+        i = task.info()
+        task_running_list.append(i.uuid)
         task.wait_for_completion(interval=TIME_WAIT)
+        task_running_list.remove(i.uuid)
     except TaskFailedError as e:
         print("Task Error: {}".format(e), file=sys.stderr)
     except Exception as e:
         print("Unexpected Error: {}".format(e), file=sys.stderr)
     finally:
         completed.set()
-        task_running_list.remove(i.uuid)
 
 
 def download_assets(task, completed, destination, dn):
     completed.wait()
-    i = task.info()
-    if i.status == TaskStatus.COMPLETED:
-        try:
-            task.download_zip(destination)
-        except TaskFailedError as e:
-            print("Download Error: {}".format(e), file=sys.stderr)
-            write_status(dn, i.last_error, "DOWNLOAD_FAILED")
-        except Exception as e:
-            print("Unexpected Error: {}".format(e), file=sys.stderr)
-            write_status(dn, i.last_error, "DOWNLOAD_FAILED")
-        finally:
-            remove_running_status(dn)
-    elif i.status == TaskStatus.FAILED:
-        write_status(dn, i.last_error, "FAILED")
-        remove_running_status(dn)
-    elif i.status == TaskStatus.CANCELED:
-        write_status(dn, i.last_error, "CANCELED")
-        remove_running_status(dn)
-    else:
-        task.cancel()  # removes orphaned tasks
-        write_status(dn, i.last_error, "CANCELED")
-        remove_running_status(dn)
+    try:
+        i = task.info()
+        if i.status == TaskStatus.COMPLETED:
+            fnzip = task.download_zip(destination)
+            new_fnzip = fnzip.replace(i.uuid, i.name)
+            os.rename(fnzip, new_fnzip)
+            write_status(dn, new_fnzip, "DOWNLOAD_COMPLETED")
+        elif i.status == TaskStatus.FAILED:
+            write_status(dn, i.last_error, "FAILED")
+        elif i.status == TaskStatus.CANCELED:
+            write_status(dn, i.uuid, "CANCELED")
+        else:
+            task.cancel()  # removes orphaned tasks (without a thread)
+            write_status(dn, i.uuid, "CANCELED")
+    except TaskFailedError as e:
+        print("Task Error: {}".format(e), file=sys.stderr)
+        write_status(dn, e, "FAILED")
+    except Exception as e:
+        print("Unexpected Error: {}".format(e), file=sys.stderr)
+        write_status(dn, e, "FAILED")
+    remove_token_file(dn)
 
 
 def starts_threads(dn, ds, tk, presets_dir, outdir, node):
@@ -200,6 +201,8 @@ def starts_threads(dn, ds, tk, presets_dir, outdir, node):
         i = task.info()
     except Exception as e:
         print("Unexpected error uploading files: {}".format(e), file=sys.stderr)
+        write_status(dn, e, "UPLOAD_FAILED")
+        remove_token_file(dn, tk)
         return
 
     completed = Event()
@@ -207,6 +210,7 @@ def starts_threads(dn, ds, tk, presets_dir, outdir, node):
     run_task_thread = Thread(target=run_task, args=(task, completed))
     run_task_thread.start()
     write_status(dn, i.uuid)
+    remove_token_file(dn, tk)
 
     download_assets_thread = Thread(
         target=download_assets, args=(task, completed, outdir, dn)
@@ -215,9 +219,14 @@ def starts_threads(dn, ds, tk, presets_dir, outdir, node):
 
 
 def cancel_all_pending_tasks(n, l):
+    print("About to cancel all running tasks:", file=sys.stderr)
     for uuid in l:
-        t = n.get_task(uuid)
-        t.cancel()
+        print(uuid, file=sys.stderr)
+        try:
+            t = n.get_task(uuid)
+            t.cancel()
+        except Exception:
+            print("Error canceling the task {}".format(uuid), file=sys.stderr)
         time.sleep(TIME_WAIT)  # delay to threads close
 
 
@@ -279,6 +288,7 @@ def auto_odm_start():
 
     print(
         f"""
+            Server: {server}:{port}
             Engine: {info.engine} {info.version}
             Max images: {info.max_images}
             Max parallel tasks: {info.max_parallel_tasks}
@@ -297,7 +307,7 @@ def auto_odm_start():
         while True:
             time.sleep(TIME_WAIT)
     except KeyboardInterrupt:
-        cancel_all_pending_tasks(node, task_running_list)
+        cancel_all_pending_tasks(node, task_running_list.copy())
         observer.stop()
 
     observer.join()
