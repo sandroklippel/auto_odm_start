@@ -1,4 +1,4 @@
-APP=auto_odm_start
+APP=auto_odm_start_service
 APP_DIR=dist
 BUILD_FILES=__main__.py
 BUILD_DIR=build
@@ -19,3 +19,18 @@ install: $(APP_DIR)/$(APP)
 
 uninstall: $(INSTALL_DIR)/$(APP)
 	rm -f "$(INSTALL_DIR)/$(APP)"
+
+service: auto_odm_start.service auto_odm_start.sh auto_odm_stop.sh
+	install -p auto_odm_start.sh auto_odm_stop.sh $(INSTALL_DIR)
+	cp auto_odm_start.service /etc/systemd/system
+	systemctl daemon-reload
+	systemctl enable auto_odm_start.service
+	systemctl start auto_odm_start.service
+
+rmservice:
+	systemctl stop auto_odm_start.service
+	systemctl disable auto_odm_start.service
+	rm -rf /etc/systemd/system/auto_odm_start.service
+	rm -rf "$(INSTALL_DIR)/auto_odm_start.sh"
+	rm -rf "$(INSTALL_DIR)/auto_odm_stop.sh"
+	systemctl daemon-reload

@@ -1,0 +1,11 @@
+[Unit]
+Description=Auto ODM start
+
+[Service]
+Type=forking
+ExecStart=/usr/local/bin/auto_odm_start.sh
+ExecStop=/usr/local/bin/auto_odm_stop.sh
+PIDFile=/tmp/auto_odm_start.pid
+
+[Install]
+WantedBy=multi-user.target
