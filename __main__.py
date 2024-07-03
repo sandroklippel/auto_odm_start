@@ -166,12 +166,12 @@ def run_task(task, completed):
         i = task.info()
         task_running_list.append(i.uuid)
         task.wait_for_completion(interval=TIME_WAIT)
-        task_running_list.remove(i.uuid)
     except TaskFailedError as e:
         print("Task Error: {}".format(e), file=sys.stderr)
     except Exception as e:
         print("Unexpected Error: {}".format(e), file=sys.stderr)
     finally:
+        task_running_list.remove(i.uuid)
         completed.set()
 
 
