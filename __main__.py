@@ -31,6 +31,7 @@ import time
 import sys
 import json
 import argparse
+import signal
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from pyodm import Node
@@ -49,6 +50,16 @@ __revision__ = "$Format:%H$"
 
 TIME_WAIT = 3
 task_running_list = []  # uuid list – Unique identifier of the task
+shutdown = False
+
+
+def handler(signum, frame):
+    global shutdown
+    shutdown = True
+
+
+signal.signal(signal.SIGINT, handler)
+signal.signal(signal.SIGTERM, handler)
 
 
 class TokenFileHandler(FileSystemEventHandler):
@@ -303,14 +314,13 @@ def auto_odm_start():
     observer.schedule(token_handler, path_to_watch, recursive=True)
     observer.start()
 
-    try:
-        while True:
-            time.sleep(TIME_WAIT)
-    except KeyboardInterrupt:
-        cancel_all_pending_tasks(node, task_running_list.copy())
-        observer.stop()
+    while not shutdown:
+        time.sleep(TIME_WAIT)
 
+    observer.stop()
     observer.join()
+    cancel_all_pending_tasks(node, task_running_list.copy())
+    return 0
 
 
 if __name__ == "__main__":
