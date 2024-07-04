@@ -32,6 +32,7 @@ import sys
 import json
 import argparse
 import signal
+import logging
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from pyodm import Node
@@ -53,13 +54,13 @@ task_running_list = []  # uuid list – Unique identifier of the task
 shutdown = False
 
 
-def handler(signum, frame):
+def shutdown_handler(signum, frame):
     global shutdown
     shutdown = True
 
 
-signal.signal(signal.SIGINT, handler)
-signal.signal(signal.SIGTERM, handler)
+signal.signal(signal.SIGINT, shutdown_handler)
+signal.signal(signal.SIGTERM, shutdown_handler)
 
 
 class TokenFileHandler(FileSystemEventHandler):
@@ -107,15 +108,23 @@ def read_config(s):
         with open(s, "r") as jsonfile:
             return json.load(jsonfile)
     except json.JSONDecodeError:
-        print("Error: invalid config file", file=sys.stderr)
+        logging.error("Invalid config file")
         sys.exit(1)
     except FileNotFoundError:
-        print("Error: the file {} was not found".format(s), file=sys.stderr)
+        logging.error("The file {} was not found".format(s))
         sys.exit(1)
 
 
 def lista_arquivos_jpg(diretorio):
-    """Retorna uma lista de arquivos JPG em um diretório, com caminhos relativos."""
+    """
+    Returns a list of JPG files in a directory, with relative paths.
+
+    Args:
+        diretorio (str): The path to the directory.
+
+    Returns:
+        list: list with the relative paths of the JPG files.
+    """
 
     arquivos_jpg = []
     for nome_arquivo in os.listdir(diretorio):
@@ -126,19 +135,20 @@ def lista_arquivos_jpg(diretorio):
 
 
 def is_valid_dir(output_dir):
-    if not os.path.isabs(output_dir):
-        return False  # O caminho não é absoluto
+    """
+    Checks if the output directory is valid.
 
-    if os.path.isfile(output_dir):
-        return False  # O caminho especificado é um arquivo e não um diretório
+    Args:
+        output_dir (str): The path to the output directory.
 
-    if not os.path.exists(output_dir):
-        return False  # o diretório não existe
-
-    if not os.access(output_dir, os.W_OK):
-        return False  # Sem permissão de escrita no diretório
-
-    return True
+    Returns:
+        bool: True if the directory is valid (exists, is a directory and has write permission), False otherwise.
+    """
+    return (
+        os.path.isabs(output_dir)
+        and os.path.isdir(output_dir)
+        and os.access(output_dir, os.W_OK)
+    )
 
 
 def read_options_from_preset(p, t):
@@ -167,11 +177,14 @@ def run_task(task, completed):
         task_running_list.append(i.uuid)
         task.wait_for_completion(interval=TIME_WAIT)
     except TaskFailedError as e:
-        print("Task Error: {}".format(e), file=sys.stderr)
+        logging.error("Task Error: {}".format(e))
     except Exception as e:
-        print("Unexpected Error: {}".format(e), file=sys.stderr)
+        logging.error("Unexpected Error: {}".format(e))
     finally:
-        task_running_list.remove(i.uuid)
+        try:
+            task_running_list.remove(i.uuid)
+        except ValueError:
+            pass
         completed.set()
 
 
@@ -192,10 +205,10 @@ def download_assets(task, completed, destination, dn):
             task.cancel()  # removes orphaned tasks (without a thread)
             write_status(dn, i.uuid, "CANCELED")
     except TaskFailedError as e:
-        print("Task Error: {}".format(e), file=sys.stderr)
+        logging.error("Task Error: {}".format(e))
         write_status(dn, e, "FAILED")
     except Exception as e:
-        print("Unexpected Error: {}".format(e), file=sys.stderr)
+        logging.error("Unexpected Error: {}".format(e))
         write_status(dn, e, "FAILED")
     remove_token_file(dn)
 
@@ -211,7 +224,7 @@ def starts_threads(dn, ds, tk, presets_dir, outdir, node):
         task = node.create_task(files=arquivos_jpg, name=ds, options=task_options)
         i = task.info()
     except Exception as e:
-        print("Unexpected error uploading files: {}".format(e), file=sys.stderr)
+        logging.error("Unexpected error uploading files: {}".format(e))
         write_status(dn, e, "UPLOAD_FAILED")
         remove_token_file(dn, tk)
         return
@@ -230,14 +243,13 @@ def starts_threads(dn, ds, tk, presets_dir, outdir, node):
 
 
 def cancel_all_pending_tasks(n, l):
-    print("About to cancel all running tasks:", file=sys.stderr)
+    logging.info("Shutting down, about to cancel all running tasks")
     for uuid in l:
-        print(uuid, file=sys.stderr)
         try:
             t = n.get_task(uuid)
             t.cancel()
         except Exception:
-            print("Error canceling the task {}".format(uuid), file=sys.stderr)
+            logging.error("Error canceling the task {}".format(uuid))
         time.sleep(TIME_WAIT)  # delay to threads close
 
 
@@ -273,7 +285,7 @@ def auto_odm_start():
     odm_token = settings["odm_token"]
 
     if not is_valid_dir(outdir):
-        print("Erro: diretório de saída inválido.")
+        logging.error("Output directory invalid.")
         return 1
 
     tokens = [
@@ -281,7 +293,7 @@ def auto_odm_start():
     ]
 
     if not tokens:
-        print("Erro: não foram encontrados tokens.")
+        logging.error("No tokens found.")
         return 1
 
     node = Node(host=server, port=port, token=odm_token)
@@ -290,14 +302,14 @@ def auto_odm_start():
         info = node.info()
 
     except NodeConnectionError as e:
-        print("Cannot connect: {}".format(e), file=sys.stderr)
+        logging.error("Cannot connect: {}".format(e))
         return 1
 
     except NodeResponseError as e:
-        print("Error: {}".format(e), file=sys.stderr)
+        logging.error("Node error: {}".format(e))
         return 1
 
-    print(
+    logging.info(
         f"""
             Server: {server}:{port}
             Engine: {info.engine} {info.version}
@@ -324,4 +336,11 @@ def auto_odm_start():
 
 
 if __name__ == "__main__":
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
     sys.exit(auto_odm_start())
